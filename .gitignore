@@ -25,3 +25,8 @@ hs_err_pid*
 
 /zh-hans.json
 /.idea/
+/js/
+/newJs/
+/newTml/
+/tml/
+/target/
