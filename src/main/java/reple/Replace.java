@@ -3,6 +3,7 @@ package reple;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonSyntaxException;
+import org.apache.commons.lang.StringUtils;
 import org.dom4j.Attribute;
 import org.dom4j.Document;
 import org.dom4j.DocumentException;
@@ -14,8 +15,13 @@ import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class Replace {
@@ -35,7 +41,11 @@ public class Replace {
     /**
      * 保存提取出来的汉化key-value
      */
-    private static LinkedHashMap hansMap = new LinkedHashMap<>();
+    private static LinkedHashMap<String,String> hansMap = new LinkedHashMap<>();
+    /**
+     * hansMap的key-value反转，方便查询hansMap的value
+     */
+    private static LinkedHashMap<String,String> reHansMap = new LinkedHashMap<>();
 
 
     private static void repl() {
@@ -84,6 +94,13 @@ public class Replace {
             try {
                 Reader reader = new FileReader(hanJsFile.toFile());
                 hansMap = gson.fromJson(reader, LinkedHashMap.class);
+                if (hansMap != null){
+                    Iterator<Map.Entry<String, String>> itr = hansMap.entrySet().iterator();
+                    while (itr.hasNext()){
+                        Map.Entry<String, String> entry = itr.next();
+                        reHansMap.put(entry.getValue(),entry.getKey());
+                    }
+                }
 
             } catch (JsonSyntaxException | FileNotFoundException e1) {
                 e1.printStackTrace();
@@ -100,7 +117,7 @@ public class Replace {
 
         // 处理tml
         try {
-            replTml(tmlPath,newTmlPath,hanJsFile,hansMap);
+            replTml(tmlPath,newTmlPath,hanJsFile);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -112,9 +129,8 @@ public class Replace {
      * 处理Tml
      * @param tmlPath
      * @param newTmlPath
-     * @param hansMap
      */
-    private static void replTml(Path tmlPath, Path newTmlPath,Path hanJsFile, LinkedHashMap hansMap) throws IOException {
+    private static void replTml(Path tmlPath, Path newTmlPath,Path hanJsFile) throws IOException {
         List<Path> tmlFiles = new ArrayList<>();
 
         // 遍历文件夹找出所有tml结尾的文件
@@ -129,11 +145,29 @@ public class Replace {
             }
         });
         Pattern regex = Pattern.compile("[\\u4e00-\\u9fa5]+");
-        int index = hansMap.size();
         // 处理每个tml
         for (Path tmlFile : tmlFiles) {
             String tmlName = tmlFile.getFileName().toString();
-            System.out.println(tmlName);
+            System.out.println();
+            System.out.println("处理文件："+tmlName);
+            tmlName = tmlName.substring(0,tmlName.lastIndexOf("."));
+
+            int index = 0;
+            Iterator<Map.Entry<String, String>> itr = hansMap.entrySet().iterator();
+            while (itr.hasNext()){
+                Map.Entry<String, String> entry = itr.next();
+                String key = entry.getKey();
+                if (key.indexOf(tmlName)!=-1){
+                    String indexStr = key.substring(key.length()-1);
+                    int idx = Integer.valueOf(indexStr);
+                    if (idx>index){
+                        index = idx;
+                    }
+                }
+            }
+            if (index>0) index++;
+
+
             SAXReader saxReader = new SAXReader();
             try {
                 Document document = saxReader.read(tmlFile.toFile());
@@ -141,32 +175,34 @@ public class Replace {
                 List<Element> nodes = new ArrayList<>();
                 getNodes(root,nodes);
                 for (Element node : nodes) {
-                    String nodeText =  node.getText();
-                    //如果包含中文
-                    if (regex.matcher(nodeText).find()){
-                        System.out.println("匹配到一个："+nodeText);
-                        String key = tmlName+"."+index;
-                        node.setText("${"+key+"}");
-                        hansMap.put(key,nodeText);
-                        index++;
-                    }
                     List<Attribute> listAttr = node.attributes();//当前节点的所有属性的list
                     for (Attribute attr : listAttr) {//遍历当前节点的所有属性
                         String attrText = attr.getText().trim();
                         //如果包含中文
-                        if (regex.matcher(attrText).find()){
-                            System.out.println("匹配到一个："+attrText);
-                            String key = tmlName+"."+index;
-                            attr.setText("${"+key+"}");
-                            hansMap.put(key,attrText);
-                            index++;
-                        }
+                        Matcher matcher = regex.matcher(attrText);
+                            while (matcher.find()){
+                                String tmp = matcher.group();
+                                // 如果存在这个中文
+                                if (StringUtils.isNotBlank(reHansMap.get(tmp))){
+                                    System.out.println("匹配到一个已存在中文："+reHansMap.get(tmp)+":"+tmp);
+                                    attrText = attrText.replaceAll(tmp,"\\${"+reHansMap.get(tmp)+"}");
+                                }else {
+                                    String key = tmlName+"Tml"+index;
+                                    System.out.println("匹配到一个中文："+key+":"+tmp);
+                                    attrText = attrText.replaceAll(tmp,"\\${"+key+"}");
+                                    hansMap.put(key,tmp);
+                                    reHansMap.put(tmp,key);
+                                    index++;
+                                }
+                                matcher = regex.matcher(attrText);
+                            }
+                            attr.setText(attrText);
                     }
                 }
 
                 // 将tml写回新的文件夹
                 XMLWriter xmlWriter  = new XMLWriter();
-                String newTml = newTmlPath.getFileName()+File.separator+tmlName;
+                String newTml = newTmlPath.getFileName()+File.separator+tmlFile.getFileName();
                 Path path = Paths.get(newTml);
                 xmlWriter.setWriter(Files.newBufferedWriter(path));
                 xmlWriter.write(document);
@@ -204,6 +240,20 @@ public class Replace {
     public static void main(String[] args) {
 
         repl();
+
+
+
+//        Pattern regex = Pattern.compile("[\\u4e00-\\u9fa5]+");
+//        String str = "你好,世界啊：哈哈哈哈";
+//        Matcher matcher = regex.matcher(str);
+//        int i = 0;
+//        while (matcher.find()){
+//            System.out.println(matcher.group());
+//            str = str.replaceAll(matcher.group(),"\\${"+i+"}");
+//            matcher = regex.matcher(str);
+//            i++;
+//        }
+//        System.out.println(str);
     }
 
 
